@@ -38,6 +38,9 @@ import (
 	"knative.dev/pkg/tracker"
 
 	eventingduckv1 "knative.dev/eventing/pkg/apis/duck/v1"
+	eventingv1 "knative.dev/eventing/pkg/apis/eventing/v1"
+	"knative.dev/eventing/pkg/apis/feature"
+	"knative.dev/eventing/pkg/auth"
 	fakeeventingclient "knative.dev/eventing/pkg/client/injection/client/fake"
 	"knative.dev/eventing/pkg/client/injection/ducks/duck/v1/channelable"
 	channelreconciler "knative.dev/eventing/pkg/client/injection/reconciler/messaging/v1/channel"
@@ -61,6 +64,11 @@ var (
 		Name: pointer.String("http"),
 		URL:  apis.HTTP(network.GetServiceHostname("foo", "bar")),
 	}
+
+	channelAudience = auth.GetAudience(eventingv1.SchemeGroupVersion.WithKind("Channel"), metav1.ObjectMeta{
+		Name:      channelName,
+		Namespace: testNS,
+	})
 )
 
 func TestReconcile(t *testing.T) {
@@ -305,6 +313,40 @@ func TestReconcile(t *testing.T) {
 				WithChannelSubscriberStatuses(subscriberStatuses()),
 				WithChannelDLSUnknown()),
 		}},
+	}, {
+		Name: "Should provision audience if authentication enabled",
+		Key:  testKey,
+		Objects: []runtime.Object{
+			NewChannel(channelName, testNS,
+				WithChannelTemplate(channelCRD()),
+				WithInitChannelConditions),
+			NewInMemoryChannel(channelName, testNS,
+				WithInitInMemoryChannelConditions,
+				WithInMemoryChannelDeploymentReady(),
+				WithInMemoryChannelServiceReady(),
+				WithInMemoryChannelEndpointsReady(),
+				WithInMemoryChannelChannelServiceReady(),
+				WithInMemoryChannelAddress(backingChannelAddressable),
+				WithInMemoryChannelDLSUnknown()),
+		},
+		WantStatusUpdates: []clientgotesting.UpdateActionImpl{{
+			Object: NewChannel(channelName, testNS,
+				WithChannelTemplate(channelCRD()),
+				WithInitChannelConditions,
+				WithBackingChannelObjRef(backingChannelObjRef()),
+				WithBackingChannelReady,
+				WithChannelDLSUnknown(),
+				WithChannelAddress(
+					&duckv1.Addressable{
+						Name:     pointer.String("http"),
+						URL:      backingChannelAddressable.URL,
+						Audience: &channelAudience,
+					},
+				)),
+		}},
+		Ctx: feature.ToContext(context.Background(), feature.Flags{
+			feature.OIDCAuthentication: feature.Enabled,
+		}),
 	}}
 
 	logger := logtesting.TestLogger(t)

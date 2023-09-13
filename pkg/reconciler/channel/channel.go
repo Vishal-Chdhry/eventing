@@ -33,10 +33,12 @@ import (
 	pkgreconciler "knative.dev/pkg/reconciler"
 
 	eventingduckv1 "knative.dev/eventing/pkg/apis/duck/v1"
+	eventingv1 "knative.dev/eventing/pkg/apis/eventing/v1"
+	"knative.dev/eventing/pkg/apis/feature"
 	v1 "knative.dev/eventing/pkg/apis/messaging/v1"
+	"knative.dev/eventing/pkg/auth"
 	channelreconciler "knative.dev/eventing/pkg/client/injection/reconciler/messaging/v1/channel"
 	listers "knative.dev/eventing/pkg/client/listers/messaging/v1"
-	ducklib "knative.dev/eventing/pkg/duck"
 	eventingduck "knative.dev/eventing/pkg/duck"
 )
 
@@ -96,6 +98,18 @@ func (r *Reconciler) ReconcileKind(ctx context.Context, c *v1.Channel) pkgreconc
 		c.Status.MarkDeadLetterSinkNotConfigured()
 	}
 
+	featureFlags := feature.FromContext(ctx)
+	if c.Status.Address != nil {
+		if featureFlags.IsOIDCAuthentication() {
+			audience := auth.GetAudience(eventingv1.SchemeGroupVersion.WithKind("Channel"), c.ObjectMeta)
+			logging.FromContext(ctx).Debugw("Setting the brokers audience", zap.String("audience", audience))
+			c.Status.Address.Audience = &audience
+		} else {
+			logging.FromContext(ctx).Debug("Clearing the brokers audience as OIDC is not enabled")
+			c.Status.Address.Audience = nil
+		}
+	}
+
 	return nil
 }
 
@@ -111,7 +125,7 @@ func (r *Reconciler) reconcileBackingChannel(ctx context.Context, channelResourc
 	// If the resource doesn't exist, we'll create it
 	if err != nil {
 		if apierrs.IsNotFound(err) {
-			newBackingChannel, err := ducklib.NewPhysicalChannel(
+			newBackingChannel, err := eventingduck.NewPhysicalChannel(
 				c.Spec.ChannelTemplate.TypeMeta,
 				metav1.ObjectMeta{
 					Name:      c.Name,
@@ -120,8 +134,8 @@ func (r *Reconciler) reconcileBackingChannel(ctx context.Context, channelResourc
 						*kmeta.NewControllerRef(c),
 					},
 				},
-				ducklib.WithChannelableSpec(c.Spec.ChannelableSpec),
-				ducklib.WithPhysicalChannelSpec(c.Spec.ChannelTemplate.Spec),
+				eventingduck.WithChannelableSpec(c.Spec.ChannelableSpec),
+				eventingduck.WithPhysicalChannelSpec(c.Spec.ChannelTemplate.Spec),
 			)
 			if err != nil {
 				logger.Errorw("Failed to create Channel from ChannelTemplate", zap.Any("channelTemplate", c.Spec.ChannelTemplate), zap.Error(err))
@@ -149,7 +163,7 @@ func (r *Reconciler) reconcileBackingChannel(ctx context.Context, channelResourc
 	logger.Debugw("Found backing Channel", zap.Any("backingChannel", backingChannelObjRef))
 	channelable, ok := backingChannel.(*eventingduckv1.Channelable)
 	if !ok {
-		return nil, fmt.Errorf("Failed to convert to Channelable Object %+v", backingChannel)
+		return nil, fmt.Errorf("failed to convert to Channelable Object %+v", backingChannel)
 	}
 	return channelable, nil
 }
